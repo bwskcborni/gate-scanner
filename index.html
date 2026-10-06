@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Gate Scanner</title>
+<script src="https://cdn.jsdelivr.net/npm/jsqr@1.4.0/dist/jsQR.js"></script>
+<style>
+  :root { --ink:#0f172a; --mut:#64748b; --bg:#0f172a; --pri:#1d4ed8; }
+  * { box-sizing:border-box; }
+  body { margin:0; font-family:system-ui,-apple-system,'Noto Sans Sinhala','Iskoola Pota',sans-serif; background:var(--bg); color:#fff; min-height:100vh; display:flex; justify-content:center; }
+  .wrap { width:100%; max-width:520px; padding:14px; }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  header b { font-size:18px; } header span { font-size:13px; color:#94a3b8; }
+  .card { background:#fff; color:var(--ink); border-radius:16px; padding:20px; }
+  input[type=password] { width:100%; font-size:20px; padding:12px; border:1px solid #cbd5e1; border-radius:10px; margin-top:10px; }
+  button { padding:13px 16px; font-size:16px; font-weight:600; color:#fff; background:var(--pri); border:0; border-radius:10px; }
+  button.full { width:100%; margin-top:14px; } button.ghost { background:#334155; }
+  .err { color:#dc2626; margin-top:10px; min-height:18px; font-size:14px; }
+  .hide { display:none !important; }
+  .cam { position:relative; border-radius:14px; overflow:hidden; background:#000; aspect-ratio:4/3; }
+  video { width:100%; height:100%; object-fit:cover; }
+  .frame { position:absolute; inset:18% 18%; border:3px solid rgba(255,255,255,.7); border-radius:14px; pointer-events:none; }
+  .camnote { padding:18px; color:#fbbf24; font-size:14px; text-align:center; position:absolute; inset:0; display:flex; align-items:center; justify-content:center; }
+  .row { display:flex; gap:10px; margin-top:10px; }
+  .row button { flex:1; }
+  .res { margin-top:12px; border-radius:16px; padding:18px; text-align:center; background:#1e293b; color:#cbd5e1; min-height:150px; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:6px; }
+  .res.ok { background:#16a34a; color:#fff; } .res.late { background:#d97706; color:#fff; }
+  .res.out { background:#2563eb; color:#fff; } .res.bad { background:#dc2626; color:#fff; } .res.info { background:#475569; color:#fff; }
+  .res .ph { width:110px; height:110px; border-radius:50%; background:rgba(255,255,255,.25); overflow:hidden; display:flex; align-items:center; justify-content:center; font-size:48px; font-weight:700; }
+  .res .ph img { width:100%; height:100%; object-fit:cover; }
+  .res .big { font-size:24px; font-weight:800; } .res .nm { font-size:22px; font-weight:700; } .res .sm { font-size:15px; opacity:.95; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header><b>🚪 ගේට්ටු scanner</b><span id="cnt"></span></header>
+
+  <div id="login" class="card">
+    <div>ආරක්ෂක PIN එක ඇතුල් කරන්න</div>
+    <input id="gpin" type="password" inputmode="numeric" autocomplete="off">
+    <div class="err" id="gerr"></div>
+    <button class="full" onclick="gLogin()">ඇතුල් වන්න</button>
+  </div>
+
+  <div id="scanner" class="hide">
+    <div class="cam">
+      <video id="v" playsinline muted autoplay></video>
+      <div class="frame"></div>
+      <div class="camnote hide" id="camnote">කැමරාව විවෘත කළ නොහැක. Browser එකට කැමරා අවසරය (Allow) දී පිටුව refresh කරන්න, නැත්නම් පහත "ඡායාරූපයක් ගෙන Scan කරන්න" බොත්තම භාවිත කරන්න.</div>
+    </div>
+    <div class="row">
+      <button class="ghost" onclick="document.getElementById('pic').click()">📷 ඡායාරූපයක් ගෙන Scan කරන්න</button>
+      <button class="ghost" onclick="gLogout()" style="flex:.4">ඉවත්</button>
+    </div>
+    <input id="pic" type="file" accept="image/*" capture="environment" class="hide">
+    <div class="res" id="res">සේවකයාගේ ෆෝන් එකේ QR කේතය කැමරාවට පෙන්වන්න</div>
+  </div>
+</div>
+<canvas id="cv" class="hide"></canvas>
+
+<script>
+/* ===== මෙම පේළිය ඔබේ Apps Script Web App URL එකට සකසා ඇත (…/exec) ===== */
+const API_URL = 'https://script.google.com/macros/s/AKfycbx3Z8pMvtZQE_C5VPUtta7EAGR5NI6SUDl_9J8T4hsUppsuaJzZszgalruCP4GQRJwr/exec';
+
+const $ = id => document.getElementById(id);
+const mem = {};
+const store = {
+  get(k){ try { return localStorage.getItem(k); } catch(e){ return mem[k] || null; } },
+  set(k,v){ try { localStorage.setItem(k,v); } catch(e){ mem[k] = v; } },
+  del(k){ try { localStorage.removeItem(k); } catch(e){ delete mem[k]; } }
+};
+async function api(action, payload){
+  const res = await fetch(API_URL, { method: 'POST', body: JSON.stringify(Object.assign({ action: action }, payload || {})) });
+  return res.json();
+}
+function call(fn, ...args){
+  if (fn === 'guardLogin') return api('guardLogin', { pin: args[0] });
+  if (fn === 'scan') return api('scan', { session: args[0], qr: args[1] });
+  return Promise.reject(new Error('unknown'));
+}
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+
+let sess = store.get('gsess'), stream = null, scanning = false, busy = false, lastText = '', lastAt = 0, count = 0, clearT = null, actx = null;
+
+function beep(good){
+  try {
+    actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = actx.createOscillator(), g = actx.createGain(); o.connect(g); g.connect(actx.destination);
+    o.frequency.value = good ? 880 : 220; g.gain.value = .15; o.start(); o.stop(actx.currentTime + (good ? .15 : .5));
+  } catch(e){}
+  try { navigator.vibrate && navigator.vibrate(good ? 80 : [200,100,200]); } catch(e){}
+}
+async function gLogin(){
+  $('gerr').textContent = ''; beep(true);
+  try {
+    const r = await call('guardLogin', $('gpin').value);
+    if (!r.ok) { $('gerr').textContent = r.msg; return; }
+    sess = r.session; store.set('gsess', sess); $('gpin').value = ''; openScanner();
+  } catch(e){ $('gerr').textContent = 'සම්බන්ධ විය නොහැක. අන්තර්ජාලය සහ API_URL පරීක්ෂා කරන්න.'; }
+}
+function gLogout(){ store.del('gsess'); sess = null; stopCam(); $('scanner').classList.add('hide'); $('login').classList.remove('hide'); }
+function openScanner(){ $('login').classList.add('hide'); $('scanner').classList.remove('hide'); startCam(); }
+
+async function startCam(){
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1280 } }, audio: false });
+    const v = $('v'); v.srcObject = stream; await v.play(); scanning = true; $('camnote').classList.add('hide'); loop();
+  } catch(e){ scanning = false; $('camnote').classList.remove('hide'); }
+}
+function stopCam(){ scanning = false; if (stream) { stream.getTracks().forEach(t => t.stop()); stream = null; } }
+function loop(){
+  if (!scanning) return;
+  const v = $('v');
+  if (!busy && v.readyState >= 2 && v.videoWidth) {
+    const sc = Math.min(1, 640 / v.videoWidth), w = Math.round(v.videoWidth * sc), h = Math.round(v.videoHeight * sc);
+    const cv = $('cv'); cv.width = w; cv.height = h; const x = cv.getContext('2d', { willReadFrequently: true });
+    x.drawImage(v, 0, 0, w, h);
+    const code = jsQR(x.getImageData(0, 0, w, h).data, w, h, { inversionAttempts: 'dontInvert' });
+    if (code && code.data) handle(code.data);
+  }
+  setTimeout(() => requestAnimationFrame(loop), 120);
+}
+$('pic').addEventListener('change', e => {
+  const f = e.target.files[0]; if (!f) return;
+  const im = new Image();
+  im.onload = () => {
+    const sc = Math.min(1, 1200 / Math.max(im.width, im.height)), w = Math.round(im.width * sc), h = Math.round(im.height * sc);
+    const cv = $('cv'); cv.width = w; cv.height = h; const x = cv.getContext('2d', { willReadFrequently: true });
+    x.drawImage(im, 0, 0, w, h);
+    const code = jsQR(x.getImageData(0, 0, w, h).data, w, h);
+    URL.revokeObjectURL(im.src);
+    if (code && code.data) { lastText = ''; handle(code.data); } else show({ ok: false, msg: 'ඡායාරූපයෙන් QR කේතය හඳුනාගත නොහැකි විය. නැවත ලඟින් ගන්න.' });
+  };
+  im.src = URL.createObjectURL(f); e.target.value = '';
+});
+
+function handle(text){
+  if (text === lastText && Date.now() - lastAt < 6000) return;
+  lastText = text; lastAt = Date.now(); busy = true;
+  $('res').className = 'res'; $('res').textContent = 'පරීක්ෂා කරමින්...';
+  call('scan', sess, text).then(show).catch(() => show({ ok: false, msg: 'සම්බන්ධතා දෝෂයකි. නැවත scan කරන්න.' }))
+    .finally(() => setTimeout(() => { busy = false; }, 2000));
+}
+function show(r){
+  const el = $('res'); let cls = 'bad', head = '', body = '';
+  if (!r.ok) {
+    head = '✖ ප්‍රතික්ෂේප විය'; body = '<div class="sm">' + esc(r.msg) + '</div>';
+    if (r.relogin) { beep(false); gLogout(); $('gerr').textContent = r.msg; return; }
+  } else {
+    const ph = '<div class="ph" id="phx">' + esc((r.name || '?').charAt(0)) + '</div>';
+    const who = ph + '<div class="nm">' + esc(r.name) + '</div><div class="sm">' + esc(r.empId) + ' · ' + esc(r.dept) + '</div>';
+    if (r.action === 'IN') { cls = r.late ? 'late' : 'ok'; head = r.late ? '⚠ ප්‍රමාදයි — මිනිත්තු ' + r.lateMin : '✔ පැමිණීම ලකුණු විය'; body = who + '<div class="sm">වේලාව: ' + esc(r.time) + '</div>'; count++; }
+    else if (r.action === 'OUT') { cls = 'out'; head = '✔ පිටවීම ලකුණු විය'; body = who + '<div class="sm">වේලාව: ' + esc(r.time) + (r.early > 0 ? ' · කලින් පිටවීම: මිනිත්තු ' + r.early : '') + '</div>'; count++; }
+    else { cls = 'info'; head = 'ℹ දැනටමත් ලකුණු කර ඇත'; body = who + '<div class="sm">' + esc(r.info) + '</div>'; }
+  }
+  el.className = 'res ' + cls; el.innerHTML = '<div class="big">' + head + '</div>' + body;
+  if (r.ok && r.photo) { const im = new Image(); im.referrerPolicy = 'no-referrer'; im.onload = () => { const p = $('phx'); if (p) { p.textContent = ''; p.appendChild(im); } }; im.src = r.photo; }
+  beep(r.ok && (r.action === 'IN' || r.action === 'OUT'));
+  $('cnt').textContent = 'මෙම session: ' + count;
+  clearTimeout(clearT); clearT = setTimeout(() => { $('res').className = 'res'; $('res').textContent = 'සේවකයාගේ ෆෝන් එකේ QR කේතය කැමරාවට පෙන්වන්න'; }, 10000);
+}
+$('gpin').addEventListener('keydown', e => { if (e.key === 'Enter') gLogin(); });
+if (sess) openScanner();
+</script>
+</body>
+</html>
